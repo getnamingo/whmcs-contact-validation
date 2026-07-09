@@ -1,0 +1,18 @@
+{
+  "schema": "1.0",
+  "type": "whmcs-addons",
+  "name": "namingo_contact_validation",
+  "version": "1.0",
+  "license": "MIT",
+  "category": "utilities",
+  "description": {
+    "name": "WHMCS Contact Validation",
+    "tagline": "Displays ICANN / NIS2-style registrant contact validation tracking"
+  },
+  "authors": [
+    {
+      "name": "Namingo",
+      "homepage": "https:\/\/namingo.org\/"
+    }
+  ]
+}
