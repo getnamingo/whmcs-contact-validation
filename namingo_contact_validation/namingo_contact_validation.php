@@ -22,7 +22,7 @@ function namingo_contact_validation_config()
     return [
         'name' => 'Namingo Contact Validation',
         'description' => 'Admin interface for registrant contact validation status, manual validation, token generation, and audit notes.',
-        'version' => '1.0.0',
+        'version' => '1.0.1',
         'author' => 'Namingo',
         'fields' => [
             'records_per_page' => [
@@ -58,6 +58,7 @@ function namingo_contact_validation_activate()
         $sql = "CREATE TABLE IF NOT EXISTS `namingo_contact_validation` (
             `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
             `client_id` int(10) NOT NULL,
+            `contact_id` int(10) unsigned NOT NULL DEFAULT 0,
             `is_validated` tinyint(1) unsigned NOT NULL DEFAULT 0,
             `validation_checked_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
             `validation_method` varchar(100) DEFAULT NULL,
@@ -66,7 +67,7 @@ function namingo_contact_validation_activate()
             `created_at` datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
             `updated_at` datetime(3) DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP(3),
             PRIMARY KEY (`id`),
-            UNIQUE KEY `client_id` (`client_id`),
+            UNIQUE KEY `client_contact` (`client_id`, `contact_id`),
             KEY `is_validated` (`is_validated`),
             KEY `validation_checked_at` (`validation_checked_at`),
             KEY `validation_token` (`validation_token`),
@@ -76,6 +77,7 @@ function namingo_contact_validation_activate()
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
 
         Capsule::connection()->statement($sql);
+        ncv_upgrade_identity_schema();
 
         return [
             'status' => 'success',
@@ -142,7 +144,8 @@ function namingo_contact_validation_output($vars)
 
         if ($activeTab === 'details') {
             $clientId = ncv_get_int('client_id');
-            echo ncv_render_details($moduleLink, $clientId, $defaultMethod);
+            $contactId = ncv_get_int('contact_id');
+            echo ncv_render_details($moduleLink, $clientId, $contactId, $defaultMethod);
         } elseif ($activeTab === 'validated') {
             echo ncv_render_list($moduleLink, true, $perPage, $quickActions);
         } else {
@@ -155,17 +158,66 @@ function namingo_contact_validation_output($vars)
     echo '</div>';
 }
 
+function namingo_contact_validation_upgrade($vars)
+{
+    ncv_upgrade_identity_schema();
+}
+
+function ncv_upgrade_identity_schema()
+{
+    if (!Capsule::schema()->hasTable('namingo_contact_validation')) {
+        return;
+    }
+
+    if (!Capsule::schema()->hasColumn('namingo_contact_validation', 'contact_id')) {
+        Capsule::connection()->statement(
+            "ALTER TABLE `namingo_contact_validation`
+             ADD `contact_id` int(10) unsigned NOT NULL DEFAULT 0
+             AFTER `client_id`"
+        );
+    }
+
+    $pairIndex = Capsule::select(
+        "SHOW INDEX FROM `namingo_contact_validation`
+         WHERE Key_name = 'client_contact'"
+    );
+
+    if (!$pairIndex) {
+        Capsule::connection()->statement(
+            "ALTER TABLE `namingo_contact_validation`
+             ADD UNIQUE KEY `client_contact` (`client_id`, `contact_id`)"
+        );
+    }
+
+    // Add the composite index before dropping the old one so the
+    // client_id foreign key always remains indexed.
+    $legacyIndex = Capsule::select(
+        "SHOW INDEX FROM `namingo_contact_validation`
+         WHERE Key_name = 'client_id'"
+    );
+
+    if ($legacyIndex) {
+        Capsule::connection()->statement(
+            "ALTER TABLE `namingo_contact_validation`
+             DROP INDEX `client_id`"
+        );
+    }
+}
+
 function ncv_ensure_table_exists()
 {
     if (!Capsule::schema()->hasTable('namingo_contact_validation')) {
         throw new RuntimeException('The table namingo_contact_validation does not exist. Activate the addon module first or create the table manually.');
     }
+
+    ncv_upgrade_identity_schema();
 }
 
 function ncv_handle_post($defaultMethod)
 {
     $action = ncv_post_string('action');
     $clientId = ncv_post_int('client_id');
+    $contactId = ncv_post_int('contact_id');
     $note = trim(ncv_post_string('note'));
     $method = trim(ncv_post_string('validation_method')) ?: $defaultMethod;
 
@@ -173,32 +225,32 @@ function ncv_handle_post($defaultMethod)
         return [null, 'Missing or invalid client ID.'];
     }
 
-    $client = ncv_get_client($clientId);
-    if (!$client) {
-        return [null, 'Client not found.'];
+    $contact = ncv_get_identity($clientId, $contactId);
+    if (!$contact) {
+        return [null, 'Contact not found.'];
     }
 
     switch ($action) {
         case 'validate':
             $logMessage = ncv_admin_log_line('Validated manually', $note, $method);
-            ncv_upsert_validation($clientId, [
+            ncv_upsert_validation($clientId, $contactId, [
                 'is_validated' => 1,
                 'validation_method' => $method,
                 'validation_token' => null,
                 'validation_checked_at' => ncv_now_ms(),
-                'validation_log' => ncv_append_validation_log($clientId, $logMessage),
+                'validation_log' => ncv_append_validation_log($clientId, $contactId, $logMessage),
             ]);
-            ncv_activity('Validated contact for client #' . $clientId . ' (' . trim($client->firstname . ' ' . $client->lastname) . ')');
+            ncv_activity('Validated ' . ncv_identity_label($clientId, $contactId));
             return ['Client #' . $clientId . ' has been marked as validated.', null];
 
         case 'unvalidate':
             $logMessage = ncv_admin_log_line('Marked as unvalidated', $note, $method);
-            ncv_upsert_validation($clientId, [
+            ncv_upsert_validation($clientId, $contactId, [
                 'is_validated' => 0,
                 'validation_method' => $method,
                 'validation_token' => null,
                 'validation_checked_at' => ncv_now_ms(),
-                'validation_log' => ncv_append_validation_log($clientId, $logMessage),
+                'validation_log' => ncv_append_validation_log($clientId, $contactId, $logMessage),
             ]);
             ncv_activity('Marked contact as unvalidated for client #' . $clientId . ' (' . trim($client->firstname . ' ' . $client->lastname) . ')');
             return ['Client #' . $clientId . ' has been marked as unvalidated.', null];
@@ -206,12 +258,12 @@ function ncv_handle_post($defaultMethod)
         case 'reset_token':
             $token = ncv_generate_token();
             $logMessage = ncv_admin_log_line('Generated validation token', $note, 'token_generated');
-            ncv_upsert_validation($clientId, [
+            ncv_upsert_validation($clientId, $contactId, [
                 'is_validated' => 0,
                 'validation_method' => 'token_generated',
                 'validation_token' => $token,
                 'validation_checked_at' => ncv_now_ms(),
-                'validation_log' => ncv_append_validation_log($clientId, $logMessage),
+                'validation_log' => ncv_append_validation_log($clientId, $contactId, $logMessage),
             ]);
             ncv_activity('Generated contact validation token for client #' . $clientId . ' (' . trim($client->firstname . ' ' . $client->lastname) . ')');
             return ['A new validation token has been generated and the client is now pending validation.', null];
@@ -220,13 +272,13 @@ function ncv_handle_post($defaultMethod)
             if ($note === '') {
                 return [null, 'Cannot save an empty note.'];
             }
-            $existing = ncv_get_validation($clientId);
+            $existing = ncv_get_validation($clientId, $contactId);
             $logMessage = ncv_admin_log_line('Added admin note', $note, $existing ? (string)$existing->validation_method : $method);
-            ncv_upsert_validation($clientId, [
+            ncv_upsert_validation($clientId, $contactId, [
                 'is_validated' => $existing ? (int)$existing->is_validated : 0,
                 'validation_method' => $existing ? $existing->validation_method : $method,
                 'validation_checked_at' => $existing ? $existing->validation_checked_at : ncv_now_ms(),
-                'validation_log' => ncv_append_validation_log($clientId, $logMessage),
+                'validation_log' => ncv_append_validation_log($clientId, $contactId, $logMessage),
             ]);
             ncv_activity('Added contact validation note for client #' . $clientId . ' (' . trim($client->firstname . ' ' . $client->lastname) . ')');
             return ['Note saved for client #' . $clientId . '.', null];
@@ -237,14 +289,10 @@ function ncv_handle_post($defaultMethod)
 
 function ncv_render_stats()
 {
-    $validated = Capsule::table('namingo_contact_validation')->where('is_validated', 1)->count();
-    $unvalidated = Capsule::table('tblclients as c')
-        ->leftJoin('namingo_contact_validation as v', 'v.client_id', '=', 'c.id')
-        ->where(function ($query) {
-            $query->whereNull('v.id')->orWhere('v.is_validated', 0);
-        })
-        ->count();
-    $totalClients = Capsule::table('tblclients')->count();
+    $validated = ncv_contact_base_query(true, '')->count();
+    $unvalidated = ncv_contact_base_query(false, '')->count();
+    $totalContacts = ncv_identity_base_query()->count();
+
     $tokens = Capsule::table('namingo_contact_validation')
         ->where('is_validated', 0)
         ->whereNotNull('validation_token')
@@ -252,7 +300,7 @@ function ncv_render_stats()
         ->count();
 
     return '<div class="row ncv-stats">'
-        . ncv_stat_card('Total Clients', $totalClients, 'All WHMCS clients')
+        . ncv_stat_card('Total Contacts', $totalContacts, 'Default and additional WHMCS contacts')
         . ncv_stat_card('Validated', $validated, 'Validation passed')
         . ncv_stat_card('Unvalidated', $unvalidated, 'Missing or pending validation')
         . ncv_stat_card('Tokens Open', $tokens, 'Token generated, not validated')
@@ -334,7 +382,7 @@ function ncv_render_list($moduleLink, $validated, $perPage, $quickActions)
 
         foreach ($rows as $row) {
             $clientName = trim($row->firstname . ' ' . $row->lastname);
-            $clientLabel = ncv_e($clientName ?: ('Client #' . (int)$row->id));
+            $clientLabel = ncv_e($clientName ?: ('Client #' . (int)$row->client_id));
             if ($row->companyname) {
                 $clientLabel .= ' <span class="text-muted">(' . ncv_e($row->companyname) . ')</span>';
             }
@@ -342,9 +390,14 @@ function ncv_render_list($moduleLink, $validated, $perPage, $quickActions)
                 ? '<span class="label label-success">Validated</span>'
                 : '<span class="label label-warning">Unvalidated</span>';
 
+            $identityId = '#' . (int)$row->client_id;
+            if ((int)$row->contact_id > 0) {
+                $identityId .= ' / C#' . (int)$row->contact_id;
+            }
+
             $html .= '<tr>'
-                . '<td>#' . (int)$row->id . '</td>'
-                . '<td><a href="clientssummary.php?userid=' . (int)$row->id . '">' . $clientLabel . '</a></td>'
+                . '<td>' . $identityId . '</td>'
+                . '<td><a href="clientssummary.php?userid=' . (int)$row->client_id . '">' . $clientLabel . '</a></td>'
                 . '<td><a href="mailto:' . ncv_e($row->email) . '">' . ncv_e($row->email) . '</a></td>'
                 . '<td>' . ncv_e($row->phonenumber ?: '-') . '</td>'
                 . '<td>' . ncv_e($row->country ?: '-') . '</td>'
@@ -352,13 +405,17 @@ function ncv_render_list($moduleLink, $validated, $perPage, $quickActions)
                 . '<td>' . ncv_e($row->validation_method ?: '-') . '</td>'
                 . '<td>' . ncv_e(ncv_format_datetime($row->validation_checked_at)) . '</td>'
                 . '<td class="text-right">'
-                . '<a class="btn btn-xs btn-default" href="' . ncv_e(ncv_url($moduleLink, ['tab' => 'details', 'client_id' => (int)$row->id])) . '">Open</a> ';
+                . '<a class="btn btn-xs btn-default" href="' . ncv_e(ncv_url($moduleLink, [
+                    'tab' => 'details',
+                    'client_id' => (int)$row->client_id,
+                    'contact_id' => (int)$row->contact_id,
+                ])) . '">Open</a> ';
 
             if ($quickActions) {
                 if ((int)$row->is_validated === 1) {
-                    $html .= ncv_inline_action_form('unvalidate', $row->id, 'Unvalidate', 'btn-warning', $tab);
+                    $html .= ncv_inline_action_form('unvalidate', $row->client_id, $row->contact_id, 'Unvalidate', 'btn-warning', $tab);
                 } else {
-                    $html .= ncv_inline_action_form('validate', $row->id, 'Validate', 'btn-success', $tab);
+                    $html .= ncv_inline_action_form('validate', $row->client_id, $row->contact_id, 'Validate', 'btn-success', $tab);
                 }
             }
 
@@ -381,6 +438,8 @@ function ncv_get_contacts($validated, $search, $page, $perPage)
     $rows = ncv_contact_base_query($validated, $search)
         ->select(
             'c.id',
+            'c.client_id',
+            'c.contact_id',
             'c.firstname',
             'c.lastname',
             'c.companyname',
@@ -392,7 +451,7 @@ function ncv_get_contacts($validated, $search, $page, $perPage)
             'v.validation_token',
             Capsule::raw('COALESCE(v.is_validated, 0) as is_validated')
         )
-        ->orderBy($validated ? 'v.validation_checked_at' : 'c.id', 'desc')
+        ->orderBy($validated ? 'v.validation_checked_at' : 'c.client_id', 'desc')
         ->offset(($page - 1) * $perPage)
         ->limit($perPage)
         ->get();
@@ -400,25 +459,73 @@ function ncv_get_contacts($validated, $search, $page, $perPage)
     return [$rows ? $rows->all() : [], $total];
 }
 
+function ncv_identity_base_query()
+{
+    return Capsule::table(Capsule::raw("
+        (
+            SELECT
+                c.id AS client_id,
+                0 AS contact_id,
+                c.firstname,
+                c.lastname,
+                c.companyname,
+                c.email,
+                c.phonenumber,
+                c.address1,
+                c.address2,
+                c.city,
+                c.state,
+                c.postcode,
+                c.country
+            FROM tblclients c
+
+            UNION ALL
+
+            SELECT
+                ct.userid AS client_id,
+                ct.id AS contact_id,
+                ct.firstname,
+                ct.lastname,
+                ct.companyname,
+                ct.email,
+                ct.phonenumber,
+                ct.address1,
+                ct.address2,
+                ct.city,
+                ct.state,
+                ct.postcode,
+                ct.country
+            FROM tblcontacts ct
+        ) AS c
+    "));
+}
+
 function ncv_contact_base_query($validated, $search)
 {
-    $query = Capsule::table('tblclients as c')
-        ->leftJoin('namingo_contact_validation as v', 'v.client_id', '=', 'c.id');
+    $query = ncv_identity_base_query()
+        ->leftJoin('namingo_contact_validation as v', function ($join) {
+            $join->on('v.client_id', '=', 'c.client_id')
+                ->on('v.contact_id', '=', 'c.contact_id');
+        });
 
     if ($validated) {
         $query->where('v.is_validated', 1);
     } else {
         $query->where(function ($where) {
-            $where->whereNull('v.id')->orWhere('v.is_validated', 0);
+            $where->whereNull('v.id')
+                ->orWhere('v.is_validated', 0);
         });
     }
 
     if ($search !== '') {
         $like = '%' . $search . '%';
+
         $query->where(function ($where) use ($search, $like) {
             if (ctype_digit($search)) {
-                $where->orWhere('c.id', (int)$search);
+                $where->orWhere('c.client_id', (int)$search)
+                    ->orWhere('c.contact_id', (int)$search);
             }
+
             $where->orWhere('c.firstname', 'like', $like)
                 ->orWhere('c.lastname', 'like', $like)
                 ->orWhere('c.companyname', 'like', $like)
@@ -434,18 +541,18 @@ function ncv_contact_base_query($validated, $search)
     return $query;
 }
 
-function ncv_render_details($moduleLink, $clientId, $defaultMethod)
+function ncv_render_details($moduleLink, $clientId, $contactId, $defaultMethod)
 {
     if ($clientId <= 0) {
         return '<div class="alert alert-danger">Missing client ID.</div>';
     }
 
-    $client = ncv_get_client($clientId);
+    $client = ncv_get_identity($clientId, $contactId);
     if (!$client) {
-        return '<div class="alert alert-danger">Client not found.</div>';
+        return '<div class="alert alert-danger">Contact not found.</div>';
     }
 
-    $validation = ncv_get_validation($clientId);
+    $validation = ncv_get_validation($clientId, $contactId);
     $isValidated = $validation && (int)$validation->is_validated === 1;
     $status = $isValidated
         ? '<span class="label label-success">Validated</span>'
@@ -462,13 +569,17 @@ function ncv_render_details($moduleLink, $clientId, $defaultMethod)
     ])));
 
     $html = '<div class="panel panel-default ncv-details">';
-    $html .= '<div class="panel-heading"><strong>Client #' . (int)$client->id . ': ' . ncv_e($name) . '</strong> ' . $status . '</div>';
+    $identityLabel = $contactId > 0
+        ? 'Client #' . $clientId . ' / Contact #' . $contactId
+        : 'Client #' . $clientId . ' / Default Contact';
+
+    $html .= '<div class="panel-heading"><strong>' . ncv_e($identityLabel) . ': ' . ncv_e($name) . '</strong> ' . $status . '</div>';
     $html .= '<div class="panel-body">';
     $html .= '<div class="row">';
     $html .= '<div class="col-md-6">';
     $html .= '<h4>Registrant Contact</h4>';
     $html .= '<table class="table table-condensed">'
-        . ncv_detail_row('Client', '<a href="clientssummary.php?userid=' . (int)$client->id . '">' . ncv_e($name) . '</a>')
+        . ncv_detail_row('Client', '<a href="clientssummary.php?userid=' . (int)$clientId . '">' . ncv_e($name) . '</a>')
         . ncv_detail_row('Company', ncv_e($client->companyname ?: '-'))
         . ncv_detail_row('Email', '<a href="mailto:' . ncv_e($client->email) . '">' . ncv_e($client->email) . '</a>')
         . ncv_detail_row('Phone', ncv_e($client->phonenumber ?: '-'))
@@ -498,10 +609,10 @@ function ncv_render_details($moduleLink, $clientId, $defaultMethod)
 
     $html .= '<div class="col-md-5">';
     $html .= '<h4>Admin Actions</h4>';
-    $html .= ncv_action_form($clientId, 'validate', 'Mark as Validated', 'btn-success', $defaultMethod, 'Document what you checked: email confirmation, phone call, KYC, registry response, etc.');
-    $html .= ncv_action_form($clientId, 'unvalidate', 'Mark as Unvalidated', 'btn-warning', $defaultMethod, 'Reason: failed checks, stale data, abuse case, bounced email, etc.');
-    $html .= ncv_action_form($clientId, 'reset_token', 'Generate / Reset Token', 'btn-info', 'token_generated', 'Use when you want to start or restart a token-based validation flow later.');
-    $html .= ncv_action_form($clientId, 'save_note', 'Add Audit Note', 'btn-default', $defaultMethod, 'Free-form internal note without changing status.');
+    $html .= ncv_action_form($clientId, $contactId, 'validate', 'Mark as Validated', 'btn-success', $defaultMethod, 'Document what you checked: email confirmation, phone call, KYC, registry response, etc.');
+    $html .= ncv_action_form($clientId, $contactId, 'unvalidate', 'Mark as Unvalidated', 'btn-warning', $defaultMethod, 'Reason: failed checks, stale data, abuse case, bounced email, etc.');
+    $html .= ncv_action_form($clientId, $contactId, 'reset_token', 'Generate / Reset Token', 'btn-info', 'token_generated', 'Use when you want to start or restart a token-based validation flow later.');
+    $html .= ncv_action_form($clientId, $contactId, 'save_note', 'Add Audit Note', 'btn-default', $defaultMethod, 'Free-form internal note without changing status.');
     $html .= '</div>';
     $html .= '</div>';
 
@@ -511,7 +622,7 @@ function ncv_render_details($moduleLink, $clientId, $defaultMethod)
     return $html;
 }
 
-function ncv_action_form($clientId, $action, $button, $buttonClass, $method, $placeholder)
+function ncv_action_form($clientId, $contactId, $action, $button, $buttonClass, $method, $placeholder)
 {
     $methodInput = '';
     if ($action !== 'reset_token') {
@@ -523,7 +634,7 @@ function ncv_action_form($clientId, $action, $button, $buttonClass, $method, $pl
     return '<form method="post" class="ncv-action-form">'
         . ncv_csrf_field()
         . '<input type="hidden" name="action" value="' . ncv_e($action) . '">'
-        . '<input type="hidden" name="client_id" value="' . (int)$clientId . '">'
+        . '<input type="hidden" name="contact_id" value="' . (int)$contactId . '">'
         . '<input type="hidden" name="redirect_tab" value="details">'
         . '<input type="hidden" name="tab" value="details">'
         . $methodInput
@@ -532,12 +643,12 @@ function ncv_action_form($clientId, $action, $button, $buttonClass, $method, $pl
         . '</form>';
 }
 
-function ncv_inline_action_form($action, $clientId, $button, $buttonClass, $redirectTab)
+function ncv_inline_action_form($action, $clientId, $contactId, $button, $buttonClass, $redirectTab)
 {
     return '<form method="post" style="display:inline">'
         . ncv_csrf_field()
         . '<input type="hidden" name="action" value="' . ncv_e($action) . '">'
-        . '<input type="hidden" name="client_id" value="' . (int)$clientId . '">'
+        . '<input type="hidden" name="contact_id" value="' . (int)$contactId . '">'
         . '<input type="hidden" name="redirect_tab" value="' . ncv_e($redirectTab) . '">'
         . '<input type="hidden" name="note" value="Quick action from contact validation list">'
         . '<button type="submit" class="btn btn-xs ' . ncv_e($buttonClass) . '">' . ncv_e($button) . '</button>'
@@ -576,38 +687,69 @@ function ncv_detail_row($label, $valueHtml)
     return '<tr><th style="width:140px">' . ncv_e($label) . '</th><td>' . $valueHtml . '</td></tr>';
 }
 
-function ncv_get_client($clientId)
-{
-    return Capsule::table('tblclients')->where('id', (int)$clientId)->first();
-}
-
-function ncv_get_validation($clientId)
-{
-    return Capsule::table('namingo_contact_validation')->where('client_id', (int)$clientId)->first();
-}
-
-function ncv_upsert_validation($clientId, array $data)
+function ncv_get_identity($clientId, $contactId = 0)
 {
     $clientId = (int)$clientId;
-    $exists = Capsule::table('namingo_contact_validation')->where('client_id', $clientId)->exists();
+    $contactId = (int)$contactId;
+
+    if ($contactId > 0) {
+        return Capsule::table('tblcontacts')
+            ->where('id', $contactId)
+            ->where('userid', $clientId)
+            ->selectRaw('userid AS client_id, id AS contact_id, firstname, lastname, companyname, email, phonenumber, address1, address2, city, state, postcode, country')
+            ->first();
+    }
+
+    return Capsule::table('tblclients')
+        ->where('id', $clientId)
+        ->selectRaw('id AS client_id, 0 AS contact_id, firstname, lastname, companyname, email, phonenumber, address1, address2, city, state, postcode, country')
+        ->first();
+}
+
+function ncv_get_validation($clientId, $contactId = 0)
+{
+    return Capsule::table('namingo_contact_validation')
+        ->where('client_id', (int)$clientId)
+        ->where('contact_id', (int)$contactId)
+        ->first();
+}
+
+function ncv_upsert_validation($clientId, $contactId, array $data)
+{
+    $clientId = (int)$clientId;
+    $contactId = (int)$contactId;
+
+    $query = Capsule::table('namingo_contact_validation')
+        ->where('client_id', $clientId)
+        ->where('contact_id', $contactId);
+
+    $exists = $query->exists();
 
     $data['updated_at'] = ncv_now_ms();
 
     if ($exists) {
-        Capsule::table('namingo_contact_validation')->where('client_id', $clientId)->update($data);
+        $query->update($data);
         return;
     }
 
     $data['client_id'] = $clientId;
+    $data['contact_id'] = $contactId;
     $data['created_at'] = ncv_now_ms();
     Capsule::table('namingo_contact_validation')->insert($data);
 }
 
-function ncv_append_validation_log($clientId, $line)
+function ncv_append_validation_log($clientId, $contactId, $line)
 {
-    $existing = ncv_get_validation((int)$clientId);
+    $existing = ncv_get_validation((int)$clientId, (int)$contactId);
     $old = $existing && $existing->validation_log ? rtrim((string)$existing->validation_log) : '';
     return $old === '' ? $line : $old . "\n" . $line;
+}
+
+function ncv_identity_label($clientId, $contactId)
+{
+    return (int)$contactId > 0
+        ? 'contact #' . (int)$contactId . ' for client #' . (int)$clientId
+        : 'default contact for client #' . (int)$clientId;
 }
 
 function ncv_admin_log_line($action, $note, $method)
