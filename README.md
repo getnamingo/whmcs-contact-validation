@@ -12,6 +12,34 @@ chmod -R 755 /var/www/html/whmcs/modules/addons/namingo_contact_validation
 
 - Go to **Settings → Apps & Integrations** in the WHMCS admin area, search for **"Contact Validation"**, activate the module, and then configure it from its respective configuration menu.
 
+## Upgrade
+
+Before upgrading, back up the WHMCS database:
+
+```bash
+mysqldump -u root -p WHMCS_DATABASE_NAME > /root/whmcs-before-contact-validation-upgrade.sql
+```
+
+Upgrade the module:
+
+```bash
+cd /tmp
+
+git clone --depth 1 https://github.com/getnamingo/whmcs-contact-validation
+
+rm -rf /var/www/html/whmcs/modules/addons/namingo_contact_validation
+
+mv whmcs-contact-validation/namingo_contact_validation /var/www/html/whmcs/modules/addons/namingo_contact_validation
+
+chown -R www-data:www-data /var/www/html/whmcs/modules/addons/namingo_contact_validation
+
+chmod -R 755 /var/www/html/whmcs/modules/addons/namingo_contact_validation
+
+rm -rf /tmp/whmcs-contact-validation
+```
+
+Finally, log in to the WHMCS admin area. WHMCS will detect the new module version and run the `v1.0.1` upgrade routine automatically.
+
 ## Usage Instructions
 
 This module is a **WHMCS Contact Validation for Namingo Registrar**.  
