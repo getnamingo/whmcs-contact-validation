@@ -5,9 +5,9 @@ ICANN / NIS2-style registrant contact validation tracking.
 
 ```bash
 git clone https://github.com/getnamingo/whmcs-contact-validation
-mv whmcs-contact-validation/namingo_contact_validation /var/www/html/whmcs/modules/addons
-chown -R www-data:www-data /var/www/html/whmcs/modules/addons/namingo_contact_validation
-chmod -R 755 /var/www/html/whmcs/modules/addons/namingo_contact_validation
+mv whmcs-contact-validation/namingo_contact_validation /var/www/whmcs/modules/addons
+chown -R www-data:www-data /var/www/whmcs/modules/addons/namingo_contact_validation
+chmod -R 755 /var/www/whmcs/modules/addons/namingo_contact_validation
 ```
 
 - Go to **Settings → Apps & Integrations** in the WHMCS admin area, search for **"Contact Validation"**, activate the module, and then configure it from its respective configuration menu.
@@ -24,17 +24,12 @@ Upgrade the module:
 
 ```bash
 cd /tmp
-
+rm -rf /tmp/whmcs-contact-validation
 git clone --depth 1 https://github.com/getnamingo/whmcs-contact-validation
-
-rm -rf /var/www/html/whmcs/modules/addons/namingo_contact_validation
-
-mv whmcs-contact-validation/namingo_contact_validation /var/www/html/whmcs/modules/addons/namingo_contact_validation
-
-chown -R www-data:www-data /var/www/html/whmcs/modules/addons/namingo_contact_validation
-
-chmod -R 755 /var/www/html/whmcs/modules/addons/namingo_contact_validation
-
+rm -rf /var/www/whmcs/modules/addons/namingo_contact_validation
+mv whmcs-contact-validation/namingo_contact_validation /var/www/whmcs/modules/addons/namingo_contact_validation
+chown -R www-data:www-data /var/www/whmcs/modules/addons/namingo_contact_validation
+chmod -R 755 /var/www/whmcs/modules/addons/namingo_contact_validation
 rm -rf /tmp/whmcs-contact-validation
 ```
 
