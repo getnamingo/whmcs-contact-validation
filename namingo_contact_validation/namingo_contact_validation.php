@@ -22,7 +22,7 @@ function namingo_contact_validation_config()
     return [
         'name' => 'Namingo Contact Validation',
         'description' => 'Admin interface for registrant contact validation status, manual validation, token generation, and audit notes.',
-        'version' => '1.0.1',
+        'version' => '1.0.2',
         'author' => 'Namingo',
         'fields' => [
             'records_per_page' => [

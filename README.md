@@ -33,7 +33,7 @@ chmod -R 755 /var/www/whmcs/modules/addons/namingo_contact_validation
 rm -rf /tmp/whmcs-contact-validation
 ```
 
-Finally, log in to the WHMCS admin area. WHMCS will detect the new module version and run the `v1.0.1` upgrade routine automatically.
+Finally, log in to the WHMCS admin area. WHMCS will detect the new module version and run the upgrade routine automatically.
 
 ## Usage Instructions
 
