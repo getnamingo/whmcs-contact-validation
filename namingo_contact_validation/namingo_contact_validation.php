@@ -252,7 +252,7 @@ function ncv_handle_post($defaultMethod)
                 'validation_checked_at' => ncv_now_ms(),
                 'validation_log' => ncv_append_validation_log($clientId, $contactId, $logMessage),
             ]);
-            ncv_activity('Marked contact as unvalidated for client #' . $clientId . ' (' . trim($client->firstname . ' ' . $client->lastname) . ')');
+            ncv_activity('Marked contact as unvalidated for client #' . $clientId . ' (' . trim($contact->firstname . ' ' . $contact->lastname) . ')');
             return ['Client #' . $clientId . ' has been marked as unvalidated.', null];
 
         case 'reset_token':
@@ -265,7 +265,7 @@ function ncv_handle_post($defaultMethod)
                 'validation_checked_at' => ncv_now_ms(),
                 'validation_log' => ncv_append_validation_log($clientId, $contactId, $logMessage),
             ]);
-            ncv_activity('Generated contact validation token for client #' . $clientId . ' (' . trim($client->firstname . ' ' . $client->lastname) . ')');
+            ncv_activity('Generated contact validation token for client #' . $clientId . ' (' . trim($contact->firstname . ' ' . $contact->lastname) . ')');
             return ['A new validation token has been generated and the client is now pending validation.', null];
 
         case 'save_note':
@@ -280,7 +280,7 @@ function ncv_handle_post($defaultMethod)
                 'validation_checked_at' => $existing ? $existing->validation_checked_at : ncv_now_ms(),
                 'validation_log' => ncv_append_validation_log($clientId, $contactId, $logMessage),
             ]);
-            ncv_activity('Added contact validation note for client #' . $clientId . ' (' . trim($client->firstname . ' ' . $client->lastname) . ')');
+            ncv_activity('Added contact validation note for client #' . $clientId . ' (' . trim($contact->firstname . ' ' . $contact->lastname) . ')');
             return ['Note saved for client #' . $clientId . '.', null];
     }
 
@@ -437,7 +437,6 @@ function ncv_get_contacts($validated, $search, $page, $perPage)
 
     $rows = ncv_contact_base_query($validated, $search)
         ->select(
-            'c.id',
             'c.client_id',
             'c.contact_id',
             'c.firstname',
@@ -634,6 +633,7 @@ function ncv_action_form($clientId, $contactId, $action, $button, $buttonClass, 
     return '<form method="post" class="ncv-action-form">'
         . ncv_csrf_field()
         . '<input type="hidden" name="action" value="' . ncv_e($action) . '">'
+        . '<input type="hidden" name="client_id" value="' . (int)$clientId . '">'
         . '<input type="hidden" name="contact_id" value="' . (int)$contactId . '">'
         . '<input type="hidden" name="redirect_tab" value="details">'
         . '<input type="hidden" name="tab" value="details">'
@@ -648,6 +648,7 @@ function ncv_inline_action_form($action, $clientId, $contactId, $button, $button
     return '<form method="post" style="display:inline">'
         . ncv_csrf_field()
         . '<input type="hidden" name="action" value="' . ncv_e($action) . '">'
+        . '<input type="hidden" name="client_id" value="' . (int)$clientId . '">'
         . '<input type="hidden" name="contact_id" value="' . (int)$contactId . '">'
         . '<input type="hidden" name="redirect_tab" value="' . ncv_e($redirectTab) . '">'
         . '<input type="hidden" name="note" value="Quick action from contact validation list">'
